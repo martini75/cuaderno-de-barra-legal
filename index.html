@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Privacidad · Cuaderno de Barra</title>
+    <meta name="description" content="Qué datos usa la app Cuaderno de Barra, qué sale del teléfono y qué no." />
+    <style>
+      /*
+        Una sola página, sin dependencias: ni fuentes remotas, ni scripts, ni analítica. Sería
+        difícil de explicar que la página que promete no seguirte cargara algo de un tercero.
+      */
+      :root {
+        color-scheme: light dark;
+        --canvas: #fbf8f2;
+        --text: #16201b;
+        --muted: #5c635c;
+        --accent: #7d5c27;
+        --rule: rgba(138, 102, 44, 0.25);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --canvas: #0b100e;
+          --text: #f2eee5;
+          --muted: #a8a99f;
+          --accent: #d4af6a;
+          --rule: rgba(212, 175, 106, 0.22);
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 3rem 1.5rem 5rem;
+        background: var(--canvas);
+        color: var(--text);
+        font: 400 17px/1.65 ui-serif, Georgia, "Times New Roman", serif;
+      }
+      main { max-width: 34rem; margin: 0 auto; }
+      .eyebrow {
+        font: 600 12px/1.4 ui-sans-serif, system-ui, sans-serif;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--accent);
+        margin: 0 0 0.6rem;
+      }
+      h1 { font-size: 2.1rem; line-height: 1.15; margin: 0 0 0.4rem; letter-spacing: -0.02em; }
+      .updated { color: var(--muted); font-size: 0.9rem; margin: 0 0 2.5rem; }
+      h2 {
+        font: 600 13px/1.4 ui-sans-serif, system-ui, sans-serif;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--accent);
+        margin: 2.5rem 0 0.6rem;
+      }
+      p { margin: 0 0 1rem; }
+      .lead { font-size: 1.15rem; }
+      hr { border: 0; border-top: 1px solid var(--rule); margin: 2.5rem 0; }
+      footer { color: var(--muted); font-size: 0.9rem; }
+      a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Cuaderno de Barra</p>
+      <h1>Privacidad</h1>
+      <p class="updated">Actualizado el 27 de julio de 2026</p>
+
+      <p class="lead">
+        No hay cuentas de usuario, no hay anuncios y no hay analítica ni seguimiento de terceros. Casi
+        todo se queda en tu teléfono. Lo que no, está aquí abajo.
+      </p>
+
+      <h2>Lo que se queda en tu teléfono</h2>
+      <p>
+        Tus favoritos, la lista de la compra, el inventario de tu bar, el perfil de gustos, el historial
+        de copas, tus notas de cata y las fotos que les añadas se guardan solo en tu dispositivo y se
+        borran al desinstalar la app.
+      </p>
+
+      <h2>Lo que sale, y solo si usas el sommelier</h2>
+      <p>
+        El asistente conversacional es opcional. Cuando lo usas, tu mensaje viaja a Anthropic (Claude) a
+        través de un servidor intermedio propio, junto con un resumen de contexto: tu perfil de gustos,
+        cuántos ingredientes tienes marcados en Mi bar, qué combinados has preparado con su valoración,
+        y tus favoritos.
+      </p>
+
+      <h2>Lo que nunca sale, aunque uses el sommelier</h2>
+      <p>
+        El texto de tus notas de cata y tus fotos. Las valoraciones numéricas viajan; lo que escribiste
+        sobre una copa, no.
+      </p>
+      <p><strong>Si no abres el sommelier, no sale nada del teléfono.</strong></p>
+
+      <h2>Voz</h2>
+      <p>
+        La lectura en voz alta usa grabaciones que vienen dentro de la app y la voz de tu propio
+        teléfono. No se envía nada a ningún sitio para leer, y no se graba ni se envía audio tuyo en
+        ningún caso.
+      </p>
+
+      <h2>Identificador</h2>
+      <p>
+        Para limitar el coste del servicio, el servidor cuenta las peticiones por un identificador
+        aleatorio generado en tu dispositivo. No está ligado a tu identidad y no se comparte.
+      </p>
+
+      <h2>Permisos</h2>
+      <p>
+        Notificaciones, para avisarte cuando acaba un temporizador. Fototeca, solo cuando eliges añadir
+        una foto a una nota de cata. La app no pide cámara, ni micrófono, ni ubicación.
+      </p>
+
+      <h2>Proveedores</h2>
+      <p>Anthropic, que procesa las conversaciones del sommelier. El servidor intermedio está alojado en Supabase.</p>
+
+      <h2>Menores</h2>
+      <p>
+        La app contiene recetas de bebidas alcohólicas y está clasificada para mayores de edad. Pide
+        confirmación de edad la primera vez que se abre.
+      </p>
+
+      <hr />
+      <footer>
+        <p>¿Dudas o quieres que borre algo? Escribe a <a href="mailto:sharifjano@gmail.com">sharifjano@gmail.com</a>.</p>
+        <p>Bebe con moderación. Si conduces, no bebas.</p>
+      </footer>
+    </main>
+  </body>
+</html>
