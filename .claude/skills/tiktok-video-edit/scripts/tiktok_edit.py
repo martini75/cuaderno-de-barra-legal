@@ -14,8 +14,10 @@ Un plan JSON (--plan plan.json) permite lo mismo con más control:
   {
     "clips": [
       {"path": "IMG_001.mp4", "start": 3, "end": 11, "speed": 1.0},
-      {"path": "IMG_002.mp4", "end": 8}
+      {"path": "IMG_002.mp4", "end": 8, "effects": ["zoom_in", "fade_out"], "transition": "fadeblack",
+       "transition_duration": 0.5, "grade": "warm"}
     ],
+    "grade": "cinematic",
     "title": "Mi primer TikTok", "title_duration": 3,
     "captions": "subs.srt",
     "music": "beat.mp3", "music_volume": 0.25, "mute_clips": false,
@@ -56,6 +58,14 @@ def find_ffmpeg():
 FFMPEG = None
 
 
+def get_ffmpeg():
+    """Resuelve ffmpeg una sola vez; sirve también cuando analyze.py importa este módulo."""
+    global FFMPEG
+    if FFMPEG is None:
+        FFMPEG = find_ffmpeg()
+    return FFMPEG
+
+
 def run(cmd, check=True):
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=check)
 
@@ -71,7 +81,7 @@ FPS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*fps")
 def probe(path):
     if not os.path.isfile(path):
         sys.exit(f"No existe el archivo: {path}")
-    out = run([FFMPEG, "-hide_banner", "-i", path], check=False).stderr
+    out = run([get_ffmpeg(), "-hide_banner", "-i", path], check=False).stderr
     m = DUR_RE.search(out)
     if not m:
         sys.exit(f"ffmpeg no pudo leer {path}:\n{out[-800:]}")
@@ -143,7 +153,7 @@ def build_plan(args):
     if args.clips:
         plan["clips"] = [parse_clip_spec(s) for s in args.clips]
     for key in ("title", "title_duration", "captions", "music", "music_volume", "transition",
-                "transition_duration", "fit", "fps", "output", "crf"):
+                "transition_duration", "fit", "fps", "output", "crf", "grade"):
         val = getattr(args, key, None)
         if val is not None:
             plan[key] = val
@@ -156,6 +166,7 @@ def build_plan(args):
     plan.setdefault("fit", "cover")
     plan.setdefault("fps", 30)
     plan.setdefault("crf", 20)
+    plan.setdefault("grade", "none")
     plan.setdefault("mute_clips", False)
     plan.setdefault("output", "tiktok.mp4")
     if not plan.get("clips"):
@@ -230,7 +241,52 @@ def filter_path(p):
 
 
 # ----------------------------------------------------------------------------- render
-def video_chain(idx, clip, info, fit, fps):
+GRADES = {
+    # etalonajes: todos suaves, pensados para material de móvil ya procesado por el teléfono
+    "none": "",
+    "punchy": "eq=contrast=1.12:saturation=1.25,unsharp=5:5:0.6",
+    "cinematic": "curves=m='0/0 0.25/0.21 0.75/0.79 1/1',colorbalance=rs=0.05:bs=-0.05:gh=0.02,"
+                 "eq=saturation=0.9,vignette=PI/5",
+    "warm": "colortemperature=temperature=5200,eq=saturation=1.1:brightness=0.02",
+    "cool": "colortemperature=temperature=8000,eq=saturation=1.05",
+    "soft": "eq=contrast=0.95:saturation=0.9:brightness=0.03,gblur=sigma=0.6",
+    "bw": "hue=s=0,eq=contrast=1.15",
+    "vintage": "curves=vintage,noise=alls=8:allf=t,vignette=PI/4.5",
+    "vivid": "vibrance=intensity=0.4,eq=contrast=1.05",
+}
+
+EFFECTS = {
+    # efectos por clip; {D} = duración del tramo en segundos (se sustituye al construir la cadena)
+    "zoom_in": "scale=w='{W}*(1+0.18*t/{D})':h='{H}*(1+0.18*t/{D})':eval=frame,crop={W}:{H}",
+    "zoom_in_slow": "scale=w='{W}*(1+0.08*t/{D})':h='{H}*(1+0.08*t/{D})':eval=frame,crop={W}:{H}",
+    "zoom_out": "scale=w='{W}*(1.18-0.18*t/{D})':h='{H}*(1.18-0.18*t/{D})':eval=frame,crop={W}:{H}",
+    "zoom_out_slow": "scale=w='{W}*(1.08-0.08*t/{D})':h='{H}*(1.08-0.08*t/{D})':eval=frame,crop={W}:{H}",
+    "punch": "scale=w='{W}*(1.25-0.25*min(t,0.3)/0.3)':h='{H}*(1.25-0.25*min(t,0.3)/0.3)':eval=frame,crop={W}:{H}",
+    "fade_in": "fade=t=in:st=0:d=0.5",
+    "fade_out": "fade=t=out:st={D_OUT}:d=0.5",
+    "flash_in": "fade=t=in:st=0:d=0.25:color=white",
+    "vignette": "vignette=PI/4.5",
+    "grain": "noise=alls=10:allf=t",
+    "glitch": "rgbashift=rh=6:bh=-6:enable='lt(t,0.25)'",
+    "shake": "crop=w={W}-40:h={H}-40:x='20+15*sin(t*23)':y='20+15*cos(t*31)',scale={W}:{H}",
+    "mirror": "hflip",
+    "bw": GRADES["bw"],
+}
+
+
+def effect_chain(names, duration):
+    """Traduce nombres de efectos a filtros. Los efectos se aplican tras encajar el clip a 9:16,
+    así todos trabajan sobre 1080x1920 y las expresiones con t empiezan en 0 en cada tramo."""
+    out = []
+    for name in names or []:
+        if name not in EFFECTS:
+            sys.exit(f"Efecto desconocido: {name}. Disponibles: {', '.join(sorted(EFFECTS))}")
+        out.append(EFFECTS[name].replace("{W}", str(W)).replace("{H}", str(H))
+                   .replace("{D_OUT}", f"{max(0.0, duration - 0.5):.3f}").replace("{D}", f"{duration:.3f}"))
+    return out
+
+
+def video_chain(idx, clip, info, fit, fps, duration=None, grade="none"):
     parts = []
     if clip.get("start") is not None or clip.get("end") is not None:
         s = clip.get("start", 0.0)
@@ -251,7 +307,16 @@ def video_chain(idx, clip, info, fit, fps):
         parts.append(f"scale={W}:{H}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black")
     else:  # cover: rellena la pantalla recortando los bordes
         parts.append(f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}")
-    parts.append(f"setsar=1,fps={fps},format=yuv420p")
+    parts.append(f"setsar=1,fps={fps}")
+    fx = effect_chain(clip.get("effects"), duration or info["duration"])
+    if fx:
+        parts += fx + ["setsar=1"]  # los zooms reescalan a tamaños impares y alteran el SAR; concat exige SAR igual
+    g = clip.get("grade", grade)
+    if g not in GRADES:
+        sys.exit(f"Etalonaje desconocido: {g}. Disponibles: {', '.join(sorted(GRADES))}")
+    if GRADES[g]:
+        parts.append(GRADES[g])
+    parts.append("format=yuv420p,settb=AVTB")  # xfade exige la misma base de tiempos en sus dos entradas
     return f"[{idx}:v]" + ",".join(parts) + f"[v{idx}]"
 
 
@@ -285,13 +350,20 @@ def cmd_render(args):
     infos = [probe(c["path"]) for c in clips]
     durs = [clip_duration(c, i) for c, i in zip(clips, infos)]
     n = len(clips)
-    trans = plan["transition"]
-    td = float(plan["transition_duration"]) if trans != "none" and n > 1 else 0.0
-    for d in durs:
-        if td and d <= td * 2:
-            sys.exit(f"Un clip dura {d:.2f}s, demasiado corto para una transición de {td}s. "
-                     "Baja --transition-duration o alarga el clip.")
-    total = sum(durs) - td * (n - 1)
+    # transición de cada clip hacia el siguiente: la del clip si la define, si no la global
+    trans_list, td_list = [], []
+    for i in range(n - 1):
+        tr = clips[i].get("transition", plan["transition"])
+        d = float(clips[i].get("transition_duration", plan["transition_duration"])) if tr != "none" else 0.0
+        trans_list.append(tr)
+        td_list.append(d)
+    use_xfade = any(t != "none" for t in trans_list)
+    for i in range(n - 1):
+        if td_list[i] and (durs[i] <= td_list[i] * 2 or durs[i + 1] <= td_list[i] * 2):
+            sys.exit(f"El clip {i + 1} o el {i + 2} dura menos del doble de la transición de {td_list[i]}s. "
+                     "Baja la duración de la transición o alarga el tramo.")
+    total = sum(durs) - sum(td_list)
+    trans = "mixta" if len(set(trans_list)) > 1 else (trans_list[0] if trans_list else "none")
     if total > TIKTOK_MAX_SECONDS:
         sys.exit(f"El montaje dura {total:.0f}s y TikTok admite {TIKTOK_MAX_SECONDS}s como máximo. Recorta clips.")
 
@@ -300,7 +372,7 @@ def cmd_render(args):
     inputs = []
     for i, (c, info) in enumerate(zip(clips, infos)):
         inputs += ["-i", c["path"]]
-        fc.append(video_chain(i, c, info, plan["fit"], plan["fps"]))
+        fc.append(video_chain(i, c, info, plan["fit"], plan["fps"], durs[i], plan["grade"]))
     # audio de los clips: silencio para los mudos, así concat/acrossfade siempre tienen entrada.
     # Con --mute-clips y música no se toca el audio original: solo se usa la pista de música.
     if not mute:
@@ -315,15 +387,23 @@ def cmd_render(args):
     if n == 1:
         vlabel = "[v0]"
         alabel = None if mute else "[a0]"
-    elif td:
+    elif use_xfade:
+        # xfade admite duration=0 como corte seco, así se mezclan cortes y transiciones en una cadena
         offset = 0.0
         prev_v, prev_a = "[v0]", "[a0]"
         for i in range(1, n):
+            tr, td = trans_list[i - 1], td_list[i - 1]
             offset += durs[i - 1] - td
-            fc.append(f"{prev_v}[v{i}]xfade=transition={trans}:duration={td}:offset={offset:.3f}[xv{i}]")
+            if td:
+                fc.append(f"{prev_v}[v{i}]xfade=transition={tr}:duration={td}:offset={offset:.3f}[xv{i}]")
+                if not mute:
+                    fc.append(f"{prev_a}[a{i}]acrossfade=d={td}:c1=tri:c2=tri[xa{i}]")
+            else:
+                fc.append(f"{prev_v}[v{i}]concat=n=2:v=1:a=0,settb=AVTB[xv{i}]")
+                if not mute:
+                    fc.append(f"{prev_a}[a{i}]concat=n=2:v=0:a=1[xa{i}]")
             prev_v = f"[xv{i}]"
             if not mute:
-                fc.append(f"{prev_a}[a{i}]acrossfade=d={td}:c1=tri:c2=tri[xa{i}]")
                 prev_a = f"[xa{i}]"
         vlabel = prev_v
         alabel = None if mute else prev_a
@@ -361,7 +441,7 @@ def cmd_render(args):
 
     out = plan["output"]
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-    cmd = [FFMPEG, "-hide_banner", "-y", *inputs,
+    cmd = [get_ffmpeg(), "-hide_banner", "-y", *inputs,
            "-filter_complex", ";".join(fc),
            "-map", vlabel, "-map", "[aout]",
            "-c:v", "libx264", "-preset", "medium", "-crf", str(plan["crf"]),
@@ -369,12 +449,16 @@ def cmd_render(args):
            "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
            "-movflags", "+faststart", "-t", f"{total:.3f}", out]
     if args.dry_run:
-        print(" ".join(f"'{x}'" if " " in x or ";" in x else x for x in cmd))
+        import shlex
+        print(shlex.join(cmd))
         return
     print(f"Montando {n} clip(s), {total:.1f}s, transición={trans}, ajuste={plan['fit']} -> {out}")
     res = run(cmd, check=False)
     if res.returncode != 0:
-        sys.exit("ffmpeg falló:\n" + res.stderr[-3000:])
+        # el filtergraph es enorme: enseña solo las líneas que explican el fallo
+        key = re.compile(r"error|invalid|failed|not match|unable|no such|cannot|unknown|option", re.I)
+        lines = [l for l in res.stderr.splitlines() if key.search(l) and not l.startswith("Failed to set value")]
+        sys.exit("ffmpeg falló:\n" + ("\n".join(lines[-15:]) if lines else res.stderr[-2000:]))
     info = probe(out)
     print(f"OK: {out}  {info['width']}x{info['height']}  {info['duration']:.2f}s  audio={'sí' if info['has_audio'] else 'no'}")
     if total > 180:
@@ -383,7 +467,6 @@ def cmd_render(args):
 
 # ----------------------------------------------------------------------------- cli
 def main():
-    global FFMPEG
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -407,13 +490,19 @@ def main():
                                             "circleopen", "smoothleft", "smoothright"])
     r.add_argument("--transition-duration", type=float, dest="transition_duration")
     r.add_argument("--fit", choices=["cover", "blur", "pad"], help="cómo encajar clips horizontales en 9:16")
+    r.add_argument("--grade", choices=sorted(GRADES), help="etalonaje global (por clip: campo grade en el plan)")
+    r.add_argument("--list-effects", action="store_true", help="lista efectos y etalonajes disponibles")
     r.add_argument("--fps", type=int)
     r.add_argument("--crf", type=int, help="calidad H.264 (18 mejor, 23 más ligero)")
     r.add_argument("--dry-run", action="store_true", help="solo imprime el comando ffmpeg")
     r.set_defaults(func=cmd_render)
 
     args = ap.parse_args()
-    FFMPEG = find_ffmpeg()
+    if getattr(args, "list_effects", False):
+        print("Efectos por clip (campo \"effects\"): " + ", ".join(sorted(EFFECTS)))
+        print("Etalonajes (--grade o campo \"grade\"): " + ", ".join(sorted(GRADES)))
+        return
+    get_ffmpeg()
     args.func(args)
 
 
