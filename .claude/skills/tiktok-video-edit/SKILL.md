@@ -48,8 +48,9 @@ python3 scripts/analyze.py suggest analisis/analysis.json -o plan.json --target 
 Genera un `plan.json` listo para renderizar y un `plan.md` con el porqué de cada decisión: tramo
 elegido de cada clip, orden (en `dynamic` el mejor tramo abre como gancho), efectos por plano
 (zoom lento en planos quietos, aceleración en tramos lentos), transición hacia el siguiente plano
-(corte seco entre planos movidos, `fadeblack`/`fadewhite` cuando cambia mucho la luz) y etalonaje
-del estilo. Estilos: `dynamic`, `vlog`, `cinematic`, `calm` (tabla en la referencia).
+(corte seco por defecto; `hblur` corto para disimular saltos dentro del mismo plano; `fade` breve
+entre dos planos quietos; `fadeblack` cuando cambia mucho la luz) y etalonaje del estilo. Las
+transiciones se eligen para que no se noten: la sección 4 de la referencia explica el criterio. Estilos: `dynamic`, `vlog`, `cinematic`, `calm` (tabla en la referencia).
 
 La propuesta es un borrador hecho con métricas. Corrígela con lo que has visto en las hojas:
 ajusta `start`/`end` para que un gesto quede entero, cambia el orden si la historia lo pide,
@@ -80,7 +81,8 @@ Opciones que más cambian el resultado:
 | `--fit cover` (por defecto) | Clips verticales o cuando no importa perder los bordes de un clip horizontal. |
 | `--fit blur` | Clips horizontales que hay que ver enteros: fondo desenfocado y el clip centrado, el look habitual de TikTok. |
 | `--fit pad` | Bandas negras. Solo si el usuario lo pide. |
-| `--transition fade\|dissolve\|slideleft…` | Cortes suaves. 0.3-0.5 s. Cada clip debe durar más del doble de la transición. |
+| `--transition fade\|hblur\|fadeblack…` | Solo cuando el corte seco no sirve. Cada tipo trae su duración natural (fade 0.6 s, hblur 0.45 s) y se recorta a un tercio del plano más corto. `dissolve` en ffmpeg es ruido de píxeles: evítala. |
+| `--no-match-volume` | Por defecto se iguala el volumen medio entre clips (mediana, ±12 dB) y se ponen microfundidos anti-clic en cada corte; desactívalo solo si quieres el audio tal cual. |
 | `--title "texto"` | Rótulo grande arriba durante 3 s (`--title-duration`). Sirve de gancho. |
 | `--captions subs.srt` | Subtítulos en la zona segura inferior (por encima de la barra de TikTok). |
 | `--music pista.mp3` | Se repite en bucle, se funde al final; `--mute-clips` para quitar el audio original. |

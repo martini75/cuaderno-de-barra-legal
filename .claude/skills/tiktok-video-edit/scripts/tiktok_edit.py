@@ -143,6 +143,7 @@ def build_plan(args):
     if args.plan:
         with open(args.plan, encoding="utf-8") as fh:
             plan = json.load(fh)
+        plan["_raw"] = dict(plan)
         base = os.path.dirname(os.path.abspath(args.plan))
         for c in plan.get("clips", []):
             if not os.path.isabs(c["path"]):
@@ -167,6 +168,9 @@ def build_plan(args):
     plan.setdefault("fps", 30)
     plan.setdefault("crf", 20)
     plan.setdefault("grade", "none")
+    plan.setdefault("match_volume", True)
+    if getattr(args, "no_match_volume", False):
+        plan["match_volume"] = False
     plan.setdefault("mute_clips", False)
     plan.setdefault("output", "tiktok.mp4")
     if not plan.get("clips"):
@@ -241,6 +245,26 @@ def filter_path(p):
 
 
 # ----------------------------------------------------------------------------- render
+# Transiciones que pasan desapercibidas (lo que suele querer decir "natural"):
+#   none      corte seco: el 80 % de un buen montaje
+#   fade      encadenado clásico (cross-dissolve). OJO: en ffmpeg "dissolve" es un fundido por
+#             píxeles ruidoso que parece interferencia; por eso no está aquí
+#   hblur     desenfoque cruzado, muy usado en móvil, suaviza saltos de encuadre
+#   fadeblack cierre de bloque; fadewhite solo hacia planos luminosos
+#   fadegrays desaturación cruzada, para recuerdos / antes-después
+#   zoomin    zoom rápido hacia el siguiente plano; solo en montajes dinámicos
+#   smooth*   barrido suave; solo si sigue la dirección del movimiento del plano anterior
+NATURAL_TRANSITIONS = ["none", "fade", "hblur", "fadeblack", "fadewhite", "fadegrays", "zoomin",
+                       "smoothleft", "smoothright", "smoothup", "smoothdown"]
+SHOWY_TRANSITIONS = ["dissolve", "pixelize", "wipeleft", "wiperight", "wipeup", "wipedown", "slideleft",
+                     "slideright", "slideup", "slidedown", "circleopen", "circleclose", "circlecrop",
+                     "rectcrop", "radial", "distance", "squeezeh", "squeezev", "hlwind", "hrwind"]
+# duración por defecto de cada transición natural (s); las más largas se recortan al 1/3 del plano más corto
+TRANSITION_DEFAULT_DURATION = {"fade": 0.6, "hblur": 0.45, "fadeblack": 0.7, "fadewhite": 0.4,
+                               "fadegrays": 0.8, "zoomin": 0.3, "smoothleft": 0.5, "smoothright": 0.5,
+                               "smoothup": 0.5, "smoothdown": 0.5}
+MIN_CLICK_FADE = 0.02  # s de fundido de audio en cada corte seco para que no haga "clic"
+
 GRADES = {
     # etalonajes: todos suaves, pensados para material de móvil ya procesado por el teléfono
     "none": "",
@@ -320,7 +344,19 @@ def video_chain(idx, clip, info, fit, fps, duration=None, grade="none"):
     return f"[{idx}:v]" + ",".join(parts) + f"[v{idx}]"
 
 
-def audio_chain(idx, clip, info, mute):
+def measure_rms(path, start, end):
+    """RMS medio (dBFS) del tramo, para igualar el volumen entre clips grabados en sitios distintos."""
+    af = "aformat=sample_rates=48000:channel_layouts=mono,astats=measure_perchannel=none:measure_overall=RMS_level"
+    cmd = [get_ffmpeg(), "-hide_banner", "-nostats", "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", path,
+           "-vn", "-af", af, "-f", "null", "-"]
+    out = run(cmd, check=False).stderr
+    m = re.findall(r"RMS level dB:\s*(-?[\d.]+|-inf)", out)
+    if not m or m[-1] == "-inf":
+        return None
+    return float(m[-1])
+
+
+def audio_chain(idx, clip, info, mute, duration=None, gain_db=0.0):
     if mute or not info["has_audio"]:
         return None
     parts = []
@@ -332,6 +368,11 @@ def audio_chain(idx, clip, info, mute):
     if speed != 1.0:
         parts.append(f"atempo={min(max(speed, 0.5), 2.0)}")
     parts.append("aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo")
+    if abs(gain_db) >= 0.5:
+        parts.append(f"volume={gain_db:.1f}dB")
+    if duration:
+        # un corte seco sin microfundido produce un chasquido audible; 20 ms no se notan
+        parts.append(f"afade=t=in:st=0:d={MIN_CLICK_FADE},afade=t=out:st={max(0.0, duration - MIN_CLICK_FADE):.3f}:d={MIN_CLICK_FADE}")
     return f"[{idx}:a]" + ",".join(parts) + f"[a{idx}]"
 
 
@@ -352,9 +393,27 @@ def cmd_render(args):
     n = len(clips)
     # transición de cada clip hacia el siguiente: la del clip si la define, si no la global
     trans_list, td_list = [], []
+    explicit_global_td = args.transition_duration is not None or "transition_duration" in (plan.get("_raw") or {})
     for i in range(n - 1):
         tr = clips[i].get("transition", plan["transition"])
-        d = float(clips[i].get("transition_duration", plan["transition_duration"])) if tr != "none" else 0.0
+        if tr == "none":
+            d = 0.0
+        elif "transition_duration" in clips[i]:
+            d = float(clips[i]["transition_duration"])
+        elif explicit_global_td:
+            d = float(plan["transition_duration"])
+        else:
+            d = TRANSITION_DEFAULT_DURATION.get(tr, float(plan["transition_duration"]))
+        if d:
+            # una transición más larga que un tercio del plano más corto que une se come el plano
+            cap = round(min(durs[i], durs[i + 1]) / 3, 2)
+            if d > cap:
+                print(f"Aviso: transición {tr} entre los planos {i + 1} y {i + 2} recortada de {d}s a {cap}s "
+                      "(un tercio del plano más corto).")
+                d = cap
+        if tr in SHOWY_TRANSITIONS:
+            print(f"Aviso: la transición '{tr}' es llamativa y rara vez se ve natural; "
+                  f"las discretas son {', '.join(NATURAL_TRANSITIONS)}.")
         trans_list.append(tr)
         td_list.append(d)
     use_xfade = any(t != "none" for t in trans_list)
@@ -375,9 +434,23 @@ def cmd_render(args):
         fc.append(video_chain(i, c, info, plan["fit"], plan["fps"], durs[i], plan["grade"]))
     # audio de los clips: silencio para los mudos, así concat/acrossfade siempre tienen entrada.
     # Con --mute-clips y música no se toca el audio original: solo se usa la pista de música.
+    gains = [0.0] * n
+    if not mute and plan["match_volume"] and n > 1:
+        # iguala el volumen medio de los clips (±12 dB) para que el oído no note el corte
+        levels = []
+        for c, info in zip(clips, infos):
+            lv = measure_rms(c["path"], c.get("start", 0.0) or 0.0, min(c.get("end", info["duration"]), info["duration"])) \
+                if info["has_audio"] else None
+            levels.append(lv)
+        valid = [lv for lv in levels if lv is not None and lv > -50]
+        if len(valid) >= 2:
+            target = sorted(valid)[len(valid) // 2]  # mediana: no sube todo por un clip mudo
+            gains = [max(-12.0, min(12.0, target - lv)) if (lv is not None and lv > -50) else 0.0 for lv in levels]
+            if any(abs(g) >= 0.5 for g in gains):
+                print("Volumen igualado entre clips: " + ", ".join(f"{g:+.1f}dB" for g in gains))
     if not mute:
         for i, (c, info) in enumerate(zip(clips, infos)):
-            ch = audio_chain(i, c, info, mute)
+            ch = audio_chain(i, c, info, mute, durs[i], gains[i])
             if ch:
                 fc.append(ch)
             else:
@@ -397,7 +470,7 @@ def cmd_render(args):
             if td:
                 fc.append(f"{prev_v}[v{i}]xfade=transition={tr}:duration={td}:offset={offset:.3f}[xv{i}]")
                 if not mute:
-                    fc.append(f"{prev_a}[a{i}]acrossfade=d={td}:c1=tri:c2=tri[xa{i}]")
+                    fc.append(f"{prev_a}[a{i}]acrossfade=d={td}:c1=qsin:c2=qsin[xa{i}]")
             else:
                 fc.append(f"{prev_v}[v{i}]concat=n=2:v=1:a=0,settb=AVTB[xv{i}]")
                 if not mute:
@@ -485,10 +558,12 @@ def main():
     r.add_argument("--music", help="pista de audio de fondo (se repite y se funde al final)")
     r.add_argument("--music-volume", type=float, dest="music_volume", help="0-1, por defecto 0.25")
     r.add_argument("--mute-clips", action="store_true", dest="mute_clips", help="quita el audio original si hay música")
-    r.add_argument("--transition", choices=["none", "fade", "fadeblack", "fadewhite", "wipeleft", "wiperight",
-                                            "slideleft", "slideright", "slideup", "slidedown", "dissolve",
-                                            "circleopen", "smoothleft", "smoothright"])
-    r.add_argument("--transition-duration", type=float, dest="transition_duration")
+    r.add_argument("--transition", choices=NATURAL_TRANSITIONS + SHOWY_TRANSITIONS,
+                   help="discretas: " + ", ".join(NATURAL_TRANSITIONS))
+    r.add_argument("--transition-duration", type=float, dest="transition_duration",
+                   help="por defecto cada transición usa su duración natural (fade 0.6, hblur 0.45, fadeblack 0.7…)")
+    r.add_argument("--no-match-volume", action="store_true", dest="no_match_volume",
+                   help="no igualar el volumen medio entre clips")
     r.add_argument("--fit", choices=["cover", "blur", "pad"], help="cómo encajar clips horizontales en 9:16")
     r.add_argument("--grade", choices=sorted(GRADES), help="etalonaje global (por clip: campo grade en el plan)")
     r.add_argument("--list-effects", action="store_true", help="lista efectos y etalonajes disponibles")
@@ -501,6 +576,8 @@ def main():
     if getattr(args, "list_effects", False):
         print("Efectos por clip (campo \"effects\"): " + ", ".join(sorted(EFFECTS)))
         print("Etalonajes (--grade o campo \"grade\"): " + ", ".join(sorted(GRADES)))
+        print("Transiciones discretas: " + ", ".join(NATURAL_TRANSITIONS))
+        print("Transiciones llamativas (evitar salvo motivo): " + ", ".join(SHOWY_TRANSITIONS))
         return
     get_ffmpeg()
     args.func(args)

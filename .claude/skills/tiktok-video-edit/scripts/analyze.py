@@ -145,7 +145,7 @@ def analyze_clip(ffmpeg, path, workdir, interval):
         flags.append(f)
 
     scores = score_seconds(per_sec, flags)
-    segments = best_segments(scores, cuts, dur, flags)
+    segments = best_segments(scores, cuts, dur, flags, motion=per_sec["motion"])
     sheet = contact_sheet(ffmpeg, path, workdir, base, dur, interval)
 
     return {
@@ -187,7 +187,7 @@ def score_seconds(per_sec, flags):
     return out
 
 
-def best_segments(scores, cuts, dur, flags, min_len=2.0, max_len=6.0):
+def best_segments(scores, cuts, dur, flags, min_len=2.0, max_len=6.0, motion=None):
     """Tramos candidatos: ventanas de 2-6 s con mejor media, sin cruzar cortes de escena
     ni segundos negros/quemados. Devuelve hasta 4 por clip, ordenados por puntuación."""
     n = len(scores)
@@ -202,7 +202,14 @@ def best_segments(scores, cuts, dur, flags, min_len=2.0, max_len=6.0):
                     continue
                 if len(sl) < length:
                     continue
-                windows.append((sum(sl) / length, start, start + length, a))
+                score = sum(sl) / length
+                # entrar y salir del tramo en un instante más calmado que su interior hace el corte más natural
+                if motion is not None and length >= 3:
+                    edges = [motion[start], motion[start + length - 1]]
+                    inner = [m for m in motion[start + 1:start + length - 1] if m is not None]
+                    if inner and all(e is not None for e in edges) and max(edges) <= sum(inner) / len(inner):
+                        score += 0.3
+                windows.append((score, start, start + length, a))
     windows.sort(key=lambda w: (-w[0], w[1]))
     chosen = []
     for sc, s, e, shot_start in windows:
@@ -293,16 +300,19 @@ def cmd_analyze(args):
 
 
 STYLES = {
-    # ritmo (s por plano), transición por defecto, transición para saltos de luz, efectos, etalonaje
-    "dynamic":   {"shot": (1.5, 3.5), "transition": "none", "td": 0.25, "alt": "fadewhite",
+    # ritmo (s por plano), transición por defecto, transición para saltos de luz, efectos, etalonaje.
+    # Solo transiciones discretas: el corte seco y el encadenado ("fade") son las que no se notan;
+    # "hblur" suaviza saltos de encuadre; fadeblack/fadewhite solo cuando cambia mucho la luz.
+    "dynamic":   {"shot": (1.5, 3.5), "transition": "none", "td": 0.0, "alt": "fadeblack", "soft": "hblur",
                   "grade": "punchy", "zoom": "zoom_in", "speed_slow": 1.25},
-    "cinematic": {"shot": (3.0, 6.0), "transition": "dissolve", "td": 0.6, "alt": "fadeblack",
+    "cinematic": {"shot": (3.0, 6.0), "transition": "fade", "td": 0.7, "alt": "fadeblack", "soft": "fade",
                   "grade": "cinematic", "zoom": "zoom_in_slow", "speed_slow": 1.0},
-    "vlog":      {"shot": (2.5, 5.0), "transition": "fade", "td": 0.35, "alt": "fadeblack",
+    "vlog":      {"shot": (2.5, 5.0), "transition": "none", "td": 0.0, "alt": "fadeblack", "soft": "fade",
                   "grade": "warm", "zoom": "zoom_in_slow", "speed_slow": 1.0},
-    "calm":      {"shot": (4.0, 6.0), "transition": "dissolve", "td": 0.8, "alt": "fadeblack",
+    "calm":      {"shot": (4.0, 6.0), "transition": "fade", "td": 1.0, "alt": "fadeblack", "soft": "fade",
                   "grade": "soft", "zoom": "zoom_out_slow", "speed_slow": 1.0},
 }
+SOFT_TD = {"hblur": 0.45, "fade": 0.5}
 
 
 def cmd_suggest(args):
@@ -361,9 +371,12 @@ def cmd_suggest(args):
             effects.append(style["zoom"])
             why.append("plano casi estático: un zoom lento le da vida")
         speed = 1.0
-        if m_avg < 0.8 and (cand["end"] - cand["start"]) >= 3 and style["speed_slow"] > 1.0:
+        loud = [l for l in (c["per_second"]["loudness"] or [])[s0:s1] if l is not None]
+        quiet = (not loud) or (sum(loud) / len(loud) < -35)
+        if m_avg < 0.8 and (cand["end"] - cand["start"]) >= 3 and style["speed_slow"] > 1.0 and quiet:
+            # solo se acelera si no hay voz: el audio acelerado suena artificial
             speed = style["speed_slow"]
-            why.append(f"acelerado x{speed} para no perder ritmo")
+            why.append(f"acelerado x{speed} para no perder ritmo (sin voz en el tramo)")
         if c["orientation"] == "horizontal":
             why.append("horizontal: se recorta al centro (cambia fit a blur si el encuadre lo pide)")
         entry = {"path": c["path"], "start": round(cand["start"], 2), "end": round(cand["end"], 2)}
@@ -372,21 +385,40 @@ def cmd_suggest(args):
         if effects:
             entry["effects"] = effects
         if i < len(chosen) - 1:
-            nxt = clips[chosen[i + 1]["clip"]]
-            n0 = int(chosen[i + 1]["start"])
+            nxt_c = chosen[i + 1]
+            nxt = clips[nxt_c["clip"]]
+            n0 = int(nxt_c["start"])
             nb = nxt["per_second"]["brightness"][n0] or 128
             nm = nxt["per_second"]["motion"][n0] or 0
-            if abs(nb - b_avg) > 70:
-                tr = style["alt"]
-                why.append(f"salto de luz grande hacia el siguiente plano: transición {tr}")
+            same_clip = nxt_c["clip"] == cand["clip"]
+            continuous = same_clip and abs(nxt_c["start"] - cand["end"]) < 0.6
+            tr, td = style["transition"], style["td"]
+            if continuous:
+                # dos tramos seguidos del mismo plano: cualquier fundido delataría el salto
+                tr, td = "none", 0.0
+                why.append("continúa el mismo plano: corte seco")
+            elif same_clip and (cand["end"] - cand["start"]) < 8:
+                # salto dentro del mismo plano (jump cut): el desenfoque cruzado lo disimula
+                tr, td = style["soft"], SOFT_TD[style["soft"]]
+                why.append(f"salto dentro del mismo plano: {tr} corto para disimular el jump cut")
+            elif abs(nb - b_avg) > 70:
+                tr = "fadewhite" if (nb > 150 and b_avg > 110 and args.style == "dynamic") else style["alt"]
+                td = 0.4 if tr == "fadewhite" else 0.7
+                why.append(f"salto de luz grande hacia el siguiente plano: {tr} para que el ojo no lo sufra")
             elif m_avg > 4 and nm > 4 and args.style != "calm":
-                tr = "none"
-                why.append("dos planos con mucho movimiento: corte seco")
-            else:
-                tr = style["transition"]
+                tr, td = "none", 0.0
+                why.append("dos planos con mucho movimiento: corte seco, el movimiento ya une")
+            elif m_avg < 1.0 and nm < 1.0 and tr == "none":
+                # dos planos quietos pegados a corte se sienten bruscos; un encadenado corto respira
+                tr, td = style["soft"], SOFT_TD[style["soft"]]
+                why.append(f"dos planos quietos: {tr} breve para que el corte no sea brusco")
+            # la transición nunca debe comerse más de un tercio del plano más corto
+            shortest = min(cand["end"] - cand["start"], nxt_c["end"] - nxt_c["start"])
+            if td > shortest / 3:
+                td = round(shortest / 3, 2)
             entry["transition"] = tr
             if tr != "none":
-                entry["transition_duration"] = style["td"]
+                entry["transition_duration"] = td
         plan_clips.append(entry)
         notes.append(f"{i + 1}. {os.path.basename(c['path'])} {cand['start']:g}-{cand['end']:g}s "
                      f"(puntuación {cand['score']}) — " + ("; ".join(why) if why else "tal cual"))
@@ -396,7 +428,6 @@ def cmd_suggest(args):
         "fit": "cover",
         "grade": style["grade"],
         "transition": style["transition"],
-        "transition_duration": style["td"],
         "output": args.render_output,
     }
     if args.title:

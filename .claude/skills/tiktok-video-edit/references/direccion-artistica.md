@@ -34,29 +34,52 @@ en cuanto el espectador ya lo ha "leído", corta.
 
 | Estilo | Plano | Corte típico | Efectos | Etalonaje | Cuándo |
 | --- | --- | --- | --- | --- | --- |
-| `dynamic` | 1.5-3.5 s | seco (`none`), a veces `fadewhite` | `punch`, `zoom_in`, x1.25 en planos lentos | `punchy` | deporte, viajes con acción, humor, "day in my life" rápido |
-| `vlog` | 2.5-5 s | `fade` 0.35 s | `zoom_in_slow` en planos quietos | `warm` | hablar a cámara, comida, planes con amigos |
-| `cinematic` | 3-6 s | `dissolve` 0.6 s, `fadeblack` entre bloques | `zoom_in_slow`, `fade_in`/`fade_out` en los extremos | `cinematic` | paisajes, arquitectura, atardeceres, piezas emotivas |
-| `calm` | 4-6 s | `dissolve` 0.8 s | `zoom_out_slow` | `soft` | naturaleza, ASMR, meditación, lectura |
+| `dynamic` | 1.5-3.5 s | seco (`none`); `hblur` 0.45 s solo para disimular jump cuts | `punch`, `zoom_in`, x1.25 en planos lentos sin voz | `punchy` | deporte, viajes con acción, humor, "day in my life" rápido |
+| `vlog` | 2.5-5 s | seco; `fade` 0.5 s entre planos quietos | `zoom_in_slow` en planos quietos | `warm` | hablar a cámara, comida, planes con amigos |
+| `cinematic` | 3-6 s | `fade` 0.7 s; `fadeblack` entre bloques | `zoom_in_slow`, `fade_in`/`fade_out` en los extremos | `cinematic` | paisajes, arquitectura, atardeceres, piezas emotivas |
+| `calm` | 4-6 s | `fade` 1 s | `zoom_out_slow` | `soft` | naturaleza, ASMR, meditación, lectura |
 
 Si hay música, intenta que los cortes caigan en el pulso (escúchala o mira su forma de onda: un
 tema a 120 bpm tiene un golpe cada 0.5 s; cortar cada 2 o 4 s cae en compás).
 
-## 4. Transiciones y qué comunican
+## 4. Transiciones: que no se noten
 
-- **Corte seco (`none`)**: neutro, rápido, es el 80 % de un buen montaje. Entre dos planos con
-  movimiento continuo o de la misma escena, siempre corte seco.
-- **`fade` / `dissolve`**: paso del tiempo o cambio de lugar suave. No abusar: más de una cada
-  tres cortes ablanda el vídeo.
-- **`fadeblack`**: cierra un capítulo. Úsalo entre bloques (día 1 / día 2) o antes del remate.
-- **`fadewhite` / `flash_in`**: energía, flash de cámara, cambio brusco con luz. Bien para pasar
-  de un plano oscuro a uno claro.
-- **`slideleft` / `slideright` / `wipeleft`**: deben seguir la dirección del movimiento del plano
-  anterior (si la cámara panea a la izquierda, `slideleft`). En sentido contrario chirría.
-- **`slideup` / `slidedown`**: bien en vertical para "siguiente punto de una lista".
-- **`circleopen`, `smoothleft`**: llamativas; una por vídeo como mucho.
+Una transición se ve natural cuando el espectador no la percibe como tal: solo nota que la
+historia avanza. Las reglas, por orden de importancia:
 
-Duración: 0.25 s (rápida) a 0.8 s (lenta). Nunca más que un tercio del plano más corto que une.
+1. **Corte seco (`none`) por defecto.** Es el 80-90 % de cualquier montaje profesional. Entre dos
+   planos de la misma escena, entre dos planos con movimiento, o cuando el ritmo es rápido, corte.
+2. **Corta en el momento adecuado.** El corte se disimula si el plano saliente termina en un
+   instante calmado (fin de un gesto, cámara casi quieta) o justo en mitad de una acción que el
+   plano entrante continúa ("cortar en la acción"). `analyze` ya prefiere tramos que entran y salen
+   en calma; al ajustar `start`/`end` a mano, evita cortar a mitad de una palabra o de un gesto.
+3. **Cuando hay que suavizar, encadenado (`fade`).** Es el cross-dissolve clásico: paso del tiempo
+   o cambio de lugar. 0.5-0.7 s. En ffmpeg, la transición llamada `dissolve` NO es esto: es un
+   fundido por píxeles que parece interferencia de televisión. No la uses.
+4. **Salto dentro del mismo plano (jump cut): `hblur`.** Cuando quitas un trozo del medio de una
+   toma, el corte seco produce un salto visible. Un desenfoque cruzado de 0.4-0.5 s lo disimula
+   mejor que un encadenado. También sirve entre dos encuadres parecidos de escenas distintas.
+5. **Dos planos quietos seguidos**: un `fade` o `hblur` breve (0.4-0.5 s) evita que el corte
+   parezca un error. Dos planos movidos: corte seco, el movimiento ya los une.
+6. **Cambios de luz grandes** (interior oscuro → exterior a pleno sol): `fadeblack` 0.7 s cierra
+   un bloque y descansa el ojo; `fadewhite` 0.4 s solo hacia un plano luminoso y en piezas
+   dinámicas, porque imita un destello de cámara.
+7. **Duración proporcional.** Nunca más de un tercio del plano más corto que une (el render la
+   recorta solo). Transiciones largas en planos cortos se comen el plano y se notan.
+8. **Una sola familia por vídeo.** Si usas encadenados, que sean todos iguales de largos. Mezclar
+   barridos, círculos y encadenados grita "plantilla de app".
+9. **El audio manda.** Un corte de vídeo perfecto se nota si el sonido salta. El render iguala el
+   volumen medio entre clips, pone microfundidos de 20 ms en cada corte seco (sin chasquidos) y
+   cruza el audio con curvas de potencia constante en los encadenados. Si el ambiente de dos clips
+   es muy distinto (viento vs. interior), mejor `mute_clips` y música, o cortar en un golpe de la
+   música.
+10. **Dirección del movimiento.** Si un plano panea a la izquierda y el siguiente empieza con el
+    sujeto entrando por la derecha, el corte fluye. `smoothleft`/`smoothright` solo tienen sentido
+    si siguen esa dirección; en sentido contrario chirrían.
+
+Transiciones que casi nunca se ven naturales y quedan fuera de las propuestas automáticas:
+`dissolve`, `pixelize`, `wipe*`, `slide*`, `circle*`, `radial`, `squeeze*`, `*wind`. `zoomin`
+(zoom rápido hacia el siguiente plano) se tolera una vez en piezas muy dinámicas.
 
 ## 5. Efectos y cuándo usarlos
 
@@ -100,7 +123,8 @@ uno que desentone (por ejemplo `warm` a un clip azulado de interior).
 
 1. ¿El primer plano engancha en 2 s?
 2. ¿Hay algún plano que no aporte nada nuevo? Fuera.
-3. ¿Las transiciones no seguidas de corte seco tienen motivo?
+3. ¿Cada transición que no sea corte seco tiene motivo (jump cut, salto de luz, paso de tiempo) y dura menos de un tercio del plano?
+3b. ¿El audio no salta entre planos (volumen parecido, sin chasquidos, sin frases cortadas)?
 4. ¿Los efectos son de la misma familia y cada uno tiene un porqué?
 5. ¿Luz y color son coherentes o el etalonaje los unifica?
 6. ¿La duración total está entre 15 y 60 s?
